@@ -1,6 +1,6 @@
-// Package summarizer produces and caches per-repo service summaries
-// derived from each repo's `site/` Hugo documentation (see §7a of
-// docs/04-analyzer-service.md). Summaries are stored in Redis under
+// Package summarizer produces and caches per-repo service summaries.
+// v2: backed by the feeder's FileSummary Weaviate class — no LLM
+// summarization call needed. Summaries are stored in Redis under
 // `<prefix><repo>` with a TTL; lookups are best-effort and never
 // block the request.
 package summarizer
@@ -16,7 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/infoblox/vibecoder-analyzer/internal/config"
-	"github.com/infoblox/vibecoder-analyzer/internal/ollama"
 	"github.com/infoblox/vibecoder-analyzer/internal/weaviate"
 )
 
@@ -26,7 +25,12 @@ type Summarizer interface {
 	Get(ctx context.Context, repo string) string
 }
 
-// docFetcher is the subset of weaviate.Searcher the summarizer needs.
+// fileSummaryFetcher is the subset of weaviate.IntelligenceSearcher the summarizer needs.
+type fileSummaryFetcher interface {
+	GetFileSummaries(ctx context.Context, repo string, limit int) ([]weaviate.FileSummary, error)
+}
+
+// docFetcher is the subset of weaviate.Searcher the summarizer needs (v1 fallback).
 type docFetcher interface {
 	FetchDocs(ctx context.Context, repo, pathPrefix string, limit int) ([]weaviate.Chunk, error)
 }
@@ -36,15 +40,29 @@ type docFetcher interface {
 // without caching. If the summarizer is disabled at the config level
 // it returns "" immediately and Get is a no-op.
 type Cache struct {
-	Cfg       *config.Config
-	Redis     *redis.Client // optional; nil disables caching
-	Searcher  docFetcher
-	Generator ollama.Generator
+	Cfg              *config.Config
+	Redis            *redis.Client // optional; nil disables caching
+	FileSummaryFetch fileSummaryFetcher // v2: fetches FileSummary objects
+	DocFetch         docFetcher         // v1 fallback: fetches site/ docs
+	Generator        generator          // v1 fallback: LLM summarization
 }
 
-// New constructs a Cache. rdb may be nil.
-func New(cfg *config.Config, rdb *redis.Client, s docFetcher, g ollama.Generator) *Cache {
-	return &Cache{Cfg: cfg, Redis: rdb, Searcher: s, Generator: g}
+// generator abstracts LLM generation (v1 fallback only).
+type generator interface {
+	Generate(ctx context.Context, model, system, prompt string) (string, error)
+}
+
+// New constructs a Cache. rdb may be nil. fsf may be nil (v1 mode).
+// When fsf is provided, the summarizer uses FileSummary objects directly.
+// When fsf is nil, falls back to FetchDocs + LLM summarization.
+func New(cfg *config.Config, rdb *redis.Client, fsf fileSummaryFetcher, docFetch docFetcher, gen generator) *Cache {
+	return &Cache{
+		Cfg:              cfg,
+		Redis:            rdb,
+		FileSummaryFetch: fsf,
+		DocFetch:         docFetch,
+		Generator:        gen,
+	}
 }
 
 // Get returns a service summary for repo. Always returns a string;
@@ -97,14 +115,56 @@ func (c *Cache) Get(ctx context.Context, repo string) string {
 	return summary
 }
 
-// build fetches doc chunks from Weaviate and asks Ollama to summarize them.
+// build fetches file summaries and concatenates them. Uses FileSummary
+// class (v2) when available, falls back to FetchDocs + LLM (v1).
 func (c *Cache) build(ctx context.Context, repo string) (string, error) {
-	chunks, err := c.Searcher.FetchDocs(ctx, repo, c.Cfg.DocsPathPrefix, c.Cfg.SummaryMaxDocChunks)
+	// v2 path: use pre-built FileSummary objects from the feeder.
+	if c.FileSummaryFetch != nil {
+		return c.buildFromFileSummaries(ctx, repo)
+	}
+
+	// v1 fallback: fetch site/ docs and summarize via LLM.
+	return c.buildFromDocs(ctx, repo)
+}
+
+// buildFromFileSummaries concatenates feeder-generated file summaries.
+func (c *Cache) buildFromFileSummaries(ctx context.Context, repo string) (string, error) {
+	summaries, err := c.FileSummaryFetch.GetFileSummaries(ctx, repo, c.Cfg.SummaryMaxDocChunks)
+	if err != nil {
+		return "", fmt.Errorf("fetch file summaries: %w", err)
+	}
+	if len(summaries) == 0 {
+		slog.Info("no FileSummary objects found; skipping summary",
+			"repo", repo)
+		return "", nil
+	}
+
+	var b strings.Builder
+	for _, fs := range summaries {
+		b.WriteString(fs.FilePath)
+		if fs.Package != "" {
+			b.WriteString(" [")
+			b.WriteString(fs.Package)
+			b.WriteString("]")
+		}
+		b.WriteString(": ")
+		b.WriteString(strings.TrimSpace(fs.Summary))
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
+// buildFromDocs is the v1 fallback: fetch site/ docs and summarize via LLM.
+func (c *Cache) buildFromDocs(ctx context.Context, repo string) (string, error) {
+	if c.DocFetch == nil || c.Generator == nil {
+		return "", nil
+	}
+
+	chunks, err := c.DocFetch.FetchDocs(ctx, repo, c.Cfg.DocsPathPrefix, c.Cfg.SummaryMaxDocChunks)
 	if err != nil {
 		return "", fmt.Errorf("fetch docs: %w", err)
 	}
 	if len(chunks) == 0 {
-		// No site/ folder for this repo; not an error, just nothing to summarize.
 		slog.Info("no documentation chunks found; skipping summary",
 			"repo", repo, "prefix", c.Cfg.DocsPathPrefix)
 		return "", nil

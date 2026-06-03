@@ -37,7 +37,8 @@ type errorResponse struct {
 // New builds the Gin engine with all routes and middleware.
 // summ may be nil to disable documentation priming.
 // emb may be nil to disable query embedding (BM25-only fallback).
-func New(cfg *config.Config, wc weaviate.Searcher, gen ollama.Generator, emb ollama.Embedder, summ summarizer.Summarizer) *gin.Engine {
+// intel may be nil to disable intelligence enrichment (feeder v2).
+func New(cfg *config.Config, wc weaviate.Searcher, intel weaviate.IntelligenceSearcher, gen ollama.Generator, emb ollama.Embedder, summ summarizer.Summarizer) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
@@ -54,7 +55,7 @@ func New(cfg *config.Config, wc weaviate.Searcher, gen ollama.Generator, emb oll
 	}
 
 	// Build the analysis pipeline.
-	ret := retriever.New(wc, emb, cfg)
+	ret := retriever.New(wc, intel, emb, cfg)
 	az := analyzer.New(ret, gen, summ, cfg)
 
 	// Routes.

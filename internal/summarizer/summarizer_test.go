@@ -50,7 +50,7 @@ func TestGet_DisabledByConfig(t *testing.T) {
 	cfg.SummaryEnabled = false
 	fetcher := &fakeDocFetcher{chunks: []weaviate.Chunk{{Content: "doc"}}}
 	gen := &fakeGenerator{out: "summary"}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	got := c.Get(context.Background(), "repo-a")
 	if got != "" {
@@ -64,7 +64,7 @@ func TestGet_DisabledByConfig(t *testing.T) {
 
 func TestGet_EmptyRepo(t *testing.T) {
 	cfg := baseCfg()
-	c := New(cfg, nil, &fakeDocFetcher{}, &fakeGenerator{out: "x"})
+	c := New(cfg, nil, nil, &fakeDocFetcher{}, &fakeGenerator{out: "x"})
 	if got := c.Get(context.Background(), ""); got != "" {
 		t.Errorf("expected empty summary for empty repo, got %q", got)
 	}
@@ -74,7 +74,7 @@ func TestGet_NoDocsReturnsEmptyAndDoesNotCallOllama(t *testing.T) {
 	cfg := baseCfg()
 	fetcher := &fakeDocFetcher{chunks: nil}
 	gen := &fakeGenerator{out: "should not be called"}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	got := c.Get(context.Background(), "repo-without-site")
 	if got != "" {
@@ -94,7 +94,7 @@ func TestGet_BuildsAndReturnsSummary_NoCache(t *testing.T) {
 		{FilePath: "site/content/_index.md", Content: "This service handles payments."},
 	}}
 	gen := &fakeGenerator{out: "Payments service. Routes: POST /charge. Deps: postgres."}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	got := c.Get(context.Background(), "billing-svc")
 	if got != gen.out {
@@ -116,7 +116,7 @@ func TestGet_FetchErrorReturnsEmpty(t *testing.T) {
 	cfg := baseCfg()
 	fetcher := &fakeDocFetcher{err: errors.New("weaviate down")}
 	gen := &fakeGenerator{out: "x"}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	if got := c.Get(context.Background(), "repo"); got != "" {
 		t.Errorf("expected empty summary on fetch error, got %q", got)
@@ -130,7 +130,7 @@ func TestGet_OllamaErrorReturnsEmpty(t *testing.T) {
 	cfg := baseCfg()
 	fetcher := &fakeDocFetcher{chunks: []weaviate.Chunk{{FilePath: "site/_index.md", Content: "doc"}}}
 	gen := &fakeGenerator{err: errors.New("ollama timeout")}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	if got := c.Get(context.Background(), "repo"); got != "" {
 		t.Errorf("expected empty summary on ollama error, got %q", got)
@@ -142,7 +142,7 @@ func TestGet_TruncatesToMaxTokens(t *testing.T) {
 	cfg.SummaryMaxTokens = 10
 	fetcher := &fakeDocFetcher{chunks: []weaviate.Chunk{{FilePath: "site/_index.md", Content: "doc"}}}
 	gen := &fakeGenerator{out: "this summary is definitely longer than ten chars"}
-	c := New(cfg, nil, fetcher, gen)
+	c := New(cfg, nil, nil, fetcher, gen)
 
 	got := c.Get(context.Background(), "repo")
 	if len(got) != 10 {

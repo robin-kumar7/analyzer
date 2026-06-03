@@ -1,10 +1,11 @@
 // Package retriever performs hybrid search against Weaviate with optional
-// multi-repo resolution (FR-A5 / FR-A5b).
+// multi-repo resolution (FR-A5 / FR-A5b) and intelligence enrichment (v2).
 package retriever
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/infoblox/vibecoder-analyzer/internal/config"
@@ -16,6 +17,14 @@ import (
 type Result struct {
 	Chunks       []weaviate.Chunk
 	ResolvedRepo string
+}
+
+// Intelligence holds enrichment data from feeder v2 classes.
+type Intelligence struct {
+	Symbols  []weaviate.Symbol
+	Functions []weaviate.Function
+	CallEdges []weaviate.CallEdge
+	RepoMap   []weaviate.RepoMapNode
 }
 
 // ErrAmbiguousRepo is returned when the repo cannot be determined
@@ -30,16 +39,17 @@ func (e *ErrAmbiguousRepo) Error() string {
 
 // Retriever searches Weaviate and resolves the target repo.
 type Retriever struct {
-	Searcher weaviate.Searcher
-	Embedder ollama.Embedder
-	Cfg      *config.Config
+	Searcher     weaviate.Searcher
+	Intelligence weaviate.IntelligenceSearcher // optional; nil disables enrichment
+	Embedder     ollama.Embedder
+	Cfg          *config.Config
 }
 
 // New creates a Retriever. embedder is required because the RepoChunk class
 // uses vectorizer:none; pass nil only in tests that stub the Searcher and
-// never exercise the embedding path.
-func New(searcher weaviate.Searcher, embedder ollama.Embedder, cfg *config.Config) *Retriever {
-	return &Retriever{Searcher: searcher, Embedder: embedder, Cfg: cfg}
+// never exercise the embedding path. intel may be nil to disable enrichment.
+func New(searcher weaviate.Searcher, intel weaviate.IntelligenceSearcher, embedder ollama.Embedder, cfg *config.Config) *Retriever {
+	return &Retriever{Searcher: searcher, Intelligence: intel, Embedder: embedder, Cfg: cfg}
 }
 
 // Retrieve performs hybrid search. When repo is provided, results are scoped
@@ -139,4 +149,82 @@ func (r *Retriever) resolveRepo(ctx context.Context, query string, vector []floa
 	}
 
 	return Result{Chunks: scopedChunks, ResolvedRepo: winner}, nil
+}
+
+// Enrich performs intelligence enrichment against feeder v2 classes.
+// Returns zero-value Intelligence if the intelligence searcher is nil or
+// intelligence is disabled. Errors are logged and swallowed (best-effort).
+func (r *Retriever) Enrich(ctx context.Context, symbols []string, repo string) Intelligence {
+	var intel Intelligence
+	if r.Intelligence == nil || r.Cfg == nil || !r.Cfg.IntelligenceEnabled || repo == "" {
+		return intel
+	}
+
+	// 1. Symbol lookup.
+	if len(symbols) > 0 {
+		syms, err := r.Intelligence.LookupSymbols(ctx, repo, symbols, r.Cfg.SymbolLookupLimit)
+		if err != nil {
+			slog.Warn("intelligence: symbol lookup failed", "error", err)
+		} else {
+			intel.Symbols = syms
+		}
+	}
+
+	// 2. Function search — extract function/method names from resolved symbols.
+	funcNames := extractFuncNames(intel.Symbols, symbols)
+	if len(funcNames) > 0 {
+		fns, err := r.Intelligence.SearchFunctions(ctx, repo, funcNames, r.Cfg.FunctionSearchLimit)
+		if err != nil {
+			slog.Warn("intelligence: function search failed", "error", err)
+		} else {
+			intel.Functions = fns
+		}
+	}
+
+	// 3. Call graph traversal from resolved function names.
+	if len(funcNames) > 0 {
+		edges, err := r.Intelligence.GetCallGraph(ctx, repo, funcNames, r.Cfg.CallGraphDepth, r.Cfg.CallGraphMaxEdges)
+		if err != nil {
+			slog.Warn("intelligence: call graph failed", "error", err)
+		} else {
+			intel.CallEdges = edges
+		}
+	}
+
+	// 4. Repository map.
+	nodes, err := r.Intelligence.GetRepoMap(ctx, repo, r.Cfg.RepoMapLimit)
+	if err != nil {
+		slog.Warn("intelligence: repo map failed", "error", err)
+	} else {
+		intel.RepoMap = nodes
+	}
+
+	return intel
+}
+
+// extractFuncNames collects function/method names from resolved symbols
+// plus any raw symbol that looks like a function call (contains a dot).
+func extractFuncNames(resolved []weaviate.Symbol, rawSymbols []string) []string {
+	seen := map[string]bool{}
+	var names []string
+
+	for _, sym := range resolved {
+		if sym.Type == "function" || sym.Type == "method" {
+			name := sym.Name
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	// Also try raw symbols that might be qualified function names.
+	for _, s := range rawSymbols {
+		if !seen[s] {
+			seen[s] = true
+			names = append(names, s)
+		}
+	}
+
+	return names
 }

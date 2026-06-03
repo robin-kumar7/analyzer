@@ -56,6 +56,15 @@ type Config struct {
 	SummaryTTL            time.Duration
 	SummaryMaxDocChunks   int
 	SummaryMaxTokens      int
+
+	// Intelligence enrichment (feeder v2).
+	IntelligenceEnabled bool
+	SymbolLookupLimit   int
+	FunctionSearchLimit int
+	CallGraphDepth      int
+	CallGraphMaxEdges   int
+	RepoMapLimit        int
+	MaxContextTokens    int
 }
 
 // Load reads configuration from the environment, applies defaults, and validates.
@@ -65,13 +74,13 @@ func Load() (*Config, error) {
 		OllamaURL:            envStr("OLLAMA_URL", "http://localhost:11434"),
 		OllamaModel:          envStr("OLLAMA_MODEL", "qwen3:30b"),
 		OllamaTimeout:        envDuration("OLLAMA_TIMEOUT", 180*time.Second),
-		EmbedModel:           envStr("EMBED_MODEL", "nomic-embed-text"),
+		EmbedModel:           envStr("EMBED_MODEL", "qwen3-embedding"),
 		EmbedTimeout:         envDuration("EMBED_TIMEOUT", 30*time.Second),
 		WeaviateURL:          envStr("WEAVIATE_URL", "http://localhost:8080"),
 		WeaviateClass:        envStr("WEAVIATE_CLASS", "RepoChunk"),
 		WeaviateTimeout:      envDuration("WEAVIATE_TIMEOUT", 15*time.Second),
 		DefaultTopK:          envInt("DEFAULT_TOP_K", 8),
-		HybridAlpha:          envFloat("HYBRID_ALPHA", 0.5),
+		HybridAlpha:          envFloat("HYBRID_ALPHA", 0.65),
 		ResolveRepoMinScore:  envFloat("RESOLVE_REPO_MIN_SCORE", 1.0),
 		ResolveRepoAmbiguity: envFloat("RESOLVE_REPO_AMBIGUITY", 0.90),
 		AnchorLen:            envInt("ANCHOR_LEN", 6),
@@ -94,6 +103,14 @@ func Load() (*Config, error) {
 		SummaryTTL:            envDuration("SUMMARY_TTL", 24*time.Hour),
 		SummaryMaxDocChunks:   envInt("SUMMARY_MAX_DOC_CHUNKS", 30),
 		SummaryMaxTokens:      envInt("SUMMARY_MAX_TOKENS", 4096),
+
+		IntelligenceEnabled: envBool("INTELLIGENCE_ENABLED", true),
+		SymbolLookupLimit:   envInt("SYMBOL_LOOKUP_LIMIT", 10),
+		FunctionSearchLimit: envInt("FUNCTION_SEARCH_LIMIT", 10),
+		CallGraphDepth:      envInt("CALLGRAPH_DEPTH", 2),
+		CallGraphMaxEdges:   envInt("CALLGRAPH_MAX_EDGES", 20),
+		RepoMapLimit:        envInt("REPOMAP_LIMIT", 20),
+		MaxContextTokens:    envInt("MAX_CONTEXT_TOKENS", 50000),
 	}
 	return c, c.validate()
 }

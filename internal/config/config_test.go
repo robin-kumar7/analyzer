@@ -22,8 +22,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.DefaultTopK != 8 {
 		t.Errorf("DefaultTopK = %d, want 8", c.DefaultTopK)
 	}
-	if c.HybridAlpha != 0.5 {
-		t.Errorf("HybridAlpha = %f, want 0.5", c.HybridAlpha)
+	if c.HybridAlpha != 0.65 {
+		t.Errorf("HybridAlpha = %f, want 0.65", c.HybridAlpha)
 	}
 	if c.AnchorLen != 6 {
 		t.Errorf("AnchorLen = %d, want 6", c.AnchorLen)

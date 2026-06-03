@@ -46,7 +46,7 @@ func TestRetrieve_RepoProvided(t *testing.T) {
 		},
 	}
 	cfg := &config.Config{DefaultTopK: 8, HybridAlpha: 0.5}
-	r := New(fs, nil, cfg)
+	r := New(fs, nil, nil, cfg)
 
 	res, err := r.Retrieve(context.Background(), "panic", "svc-a", 8)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestRetrieve_RepoOmitted_ClearWinner(t *testing.T) {
 		ResolveRepoMinScore:  1.0,
 		ResolveRepoAmbiguity: 0.90,
 	}
-	r := New(fs, nil, cfg)
+	r := New(fs, nil, nil, cfg)
 
 	res, err := r.Retrieve(context.Background(), "panic", "", 8)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestRetrieve_RepoOmitted_Ambiguous(t *testing.T) {
 		ResolveRepoMinScore:  1.0,
 		ResolveRepoAmbiguity: 0.90,
 	}
-	r := New(fs, nil, cfg)
+	r := New(fs, nil, nil, cfg)
 
 	_, err := r.Retrieve(context.Background(), "panic", "", 8)
 	if err == nil {
@@ -153,7 +153,7 @@ func TestRetrieve_RepoOmitted_BelowFloor(t *testing.T) {
 		ResolveRepoMinScore:  1.0,
 		ResolveRepoAmbiguity: 0.90,
 	}
-	r := New(fs, nil, cfg)
+	r := New(fs, nil, nil, cfg)
 
 	_, err := r.Retrieve(context.Background(), "panic", "", 8)
 	var ambErr *ErrAmbiguousRepo

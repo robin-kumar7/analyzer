@@ -61,9 +61,9 @@ func (a *Analyzer) Run(ctx context.Context, q Query) (*issue.Issue, error) {
 		"input_len", len(q.Input))
 
 	// 1. Extract signals from input.
-	slog.Info("pipeline: step 1/8 parsing input signals")
+	slog.Info("pipeline: step 1/10 parsing input signals")
 	signals := logparse.Extract(q.Input, mode)
-	slog.Info("pipeline: step 1/8 done",
+	slog.Info("pipeline: step 1/10 done",
 		"file_anchors", len(signals.FileFrames),
 		"symbols", len(signals.Symbols),
 		"error_type", signals.ErrorType)
@@ -73,60 +73,68 @@ func (a *Analyzer) Run(ctx context.Context, q Query) (*issue.Issue, error) {
 	if queryStr == "" {
 		queryStr = q.Input
 	}
-	slog.Info("pipeline: step 2/8 retrieving chunks from weaviate",
+	slog.Info("pipeline: step 2/10 retrieving chunks from weaviate",
 		"query_len", len(queryStr),
 		"top_k", topK)
 	res, err := a.Retriever.Retrieve(ctx, queryStr, q.Repo, topK)
 	if err != nil {
-		slog.Error("pipeline: step 2/8 retrieval failed", "error", err)
+		slog.Error("pipeline: step 2/10 retrieval failed", "error", err)
 		return nil, fmt.Errorf("retrieval: %w", err)
 	}
-	slog.Info("pipeline: step 2/8 done",
+	slog.Info("pipeline: step 2/10 done",
 		"resolved_repo", res.ResolvedRepo,
 		"chunks", len(res.Chunks))
 
 	// 3. Documentation priming (§7a) — fetch (or cache-hit) the per-repo
-	// service summary built from the repo's site/ Hugo docs. Best-effort:
-	// any failure yields an empty summary and the request still proceeds.
+	// service summary. v2 uses FileSummary class; v1 falls back to
+	// site/ docs + LLM. Best-effort: any failure yields empty summary.
 	var serviceSummary string
 	if a.Summarizer != nil {
-		slog.Info("pipeline: step 3/8 fetching service summary (redis cache)",
+		slog.Info("pipeline: step 3/10 fetching service summary",
 			"repo", res.ResolvedRepo)
 		serviceSummary = a.Summarizer.Get(ctx, res.ResolvedRepo)
-		slog.Info("pipeline: step 3/8 done", "summary_len", len(serviceSummary))
+		slog.Info("pipeline: step 3/10 done", "summary_len", len(serviceSummary))
 	} else {
-		slog.Info("pipeline: step 3/8 skipped (summarizer disabled)")
+		slog.Info("pipeline: step 3/10 skipped (summarizer disabled)")
 	}
 
-	// 4. Build LLM prompt.
-	slog.Info("pipeline: step 4/8 building LLM prompt")
-	system, user := prompt.Build(signals, res.Chunks, serviceSummary)
-	slog.Info("pipeline: step 4/8 done",
+	// 4-7. Intelligence enrichment (feeder v2) — symbols, functions,
+	// call graph, repo map. Best-effort: errors logged, not fatal.
+	slog.Info("pipeline: steps 4-7/10 intelligence enrichment",
+		"repo", res.ResolvedRepo,
+		"symbols", len(signals.Symbols))
+	intel := a.Retriever.Enrich(ctx, signals.Symbols, res.ResolvedRepo)
+	slog.Info("pipeline: steps 4-7/10 done",
+		"symbols_resolved", len(intel.Symbols),
+		"functions", len(intel.Functions),
+		"call_edges", len(intel.CallEdges),
+		"repo_map_nodes", len(intel.RepoMap))
+
+	// 8. Build LLM prompt with intelligence context.
+	slog.Info("pipeline: step 8/10 building LLM prompt")
+	system, user := prompt.Build(signals, res.Chunks, serviceSummary, intel)
+	slog.Info("pipeline: step 8/10 done",
 		"system_len", len(system),
 		"user_len", len(user))
 
-	// 5. Generate analysis via LLM.
-	slog.Info("pipeline: step 5/8 calling LLM",
+	// 9. Generate analysis via LLM.
+	slog.Info("pipeline: step 9/10 calling LLM",
 		"model", a.Cfg.OllamaModel,
 		"timeout", a.Cfg.OllamaTimeout)
 	raw, err := a.Generator.Generate(ctx, a.Cfg.OllamaModel, system, user)
 	if err != nil {
-		slog.Error("pipeline: step 5/8 generation failed", "error", err)
+		slog.Error("pipeline: step 9/10 generation failed", "error", err)
 		return nil, fmt.Errorf("generation: %w", err)
 	}
-	slog.Info("pipeline: step 5/8 done", "raw_len", len(raw))
+	slog.Info("pipeline: step 9/10 done", "raw_len", len(raw))
 
-	// 6. Parse structured output.
-	slog.Info("pipeline: step 6/8 parsing LLM JSON output")
+	// 10. Parse, ground, calibrate.
+	slog.Info("pipeline: step 10/10 parse + ground + calibrate")
 	iss, err := parseIssue(raw)
 	if err != nil {
-		slog.Error("pipeline: step 6/8 parse failed", "error", err)
+		slog.Error("pipeline: step 10/10 parse failed", "error", err)
 		return nil, fmt.Errorf("parse LLM output: %w", err)
 	}
-	slog.Info("pipeline: step 6/8 done",
-		"title", iss.Title,
-		"severity", iss.Severity,
-		"category", iss.Category)
 
 	// Set resolved repo from retrieval.
 	iss.ResolvedRepo = res.ResolvedRepo
@@ -134,22 +142,23 @@ func (a *Analyzer) Run(ctx context.Context, q Query) (*issue.Issue, error) {
 	// Build references from retrieved chunks.
 	iss.References = buildReferences(res.Chunks)
 
-	// 7. Ground — verify model claims against actual chunks.
-	slog.Info("pipeline: step 7/8 grounding model claims against chunks")
+	// Ground — verify model claims against actual chunks.
 	grounding.Verify(iss, res.Chunks, a.Cfg.AnchorLen, a.Cfg.AnchorMin)
-	slog.Info("pipeline: step 7/8 done",
-		"grounding_ok", iss.GroundingOK,
-		"evidence", len(iss.Evidence))
 
-	// 8. Calibrate — deterministic confidence linting.
-	slog.Info("pipeline: step 8/8 calibrating confidence")
+	// Calibrate — deterministic confidence linting.
 	calibration.Lint(iss)
-	slog.Info("pipeline: step 8/8 done", "confidence", iss.Confidence)
+
+	slog.Info("pipeline: step 10/10 done",
+		"grounding_ok", iss.GroundingOK,
+		"confidence", iss.Confidence)
 
 	slog.Info("pipeline: complete",
 		"resolved_repo", iss.ResolvedRepo,
 		"grounding_ok", iss.GroundingOK,
-		"confidence", iss.Confidence)
+		"confidence", iss.Confidence,
+		"intelligence_symbols", len(intel.Symbols),
+		"intelligence_functions", len(intel.Functions),
+		"intelligence_edges", len(intel.CallEdges))
 
 	return iss, nil
 }

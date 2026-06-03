@@ -111,7 +111,7 @@ type embedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
 }
 
-// Embed returns a single embedding for text using model (e.g. "nomic-embed-text").
+// Embed returns a single embedding for text using model (e.g. "qwen3-embedding").
 // Must match the embedding model the feeder used; otherwise vector spaces
 // are incompatible and search quality collapses.
 func (c *Client) Embed(ctx context.Context, model, text string) ([]float32, error) {

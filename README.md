@@ -1,13 +1,13 @@
 # analyzer
 
-HTTP service (and optional Loki poller) that takes a production log line
-or free-form error prompt, retrieves the most relevant code chunks from
-Weaviate, primes the LLM with a per-repo documentation summary cached in
-Redis, and returns a structured root-cause `Issue` JSON.
+HTTP service that takes a production log line or free-form error prompt,
+retrieves relevant code chunks **and intelligence artifacts** (symbols,
+functions, call graph, architecture map) from Weaviate, primes the LLM
+with per-repo file summaries cached in Redis, and returns a structured
+root-cause `Issue` JSON.
 
-The **feeder** indexes repos (including each repo's `site/` Hugo docs)
-into Weaviate. The analyzer is read-only against Weaviate and writes
-only to Redis (summary cache + optional issue sink).
+The **feeder v2** indexes repos into six Weaviate classes. The analyzer
+is read-only against Weaviate and writes only to Redis (summary cache).
 
 See [docs/04-analyzer-service.md](../docs/04-analyzer-service.md) for the full design.
 
@@ -18,12 +18,12 @@ See [docs/04-analyzer-service.md](../docs/04-analyzer-service.md) for the full d
 | Go 1.23+ | Build | — |
 | Weaviate (already populated by `feeder`) | Code + docs search | `http://localhost:8080` |
 | Ollama with a chat model | LLM generation | `http://localhost:11434` |
-| Ollama with `nomic-embed-text` | Query embeddings | same |
+| Ollama with `qwen3-embedding` | Query embeddings | same |
 | Redis | Summary cache (`§7a`), Loki checkpoint, issue sink | `redis://localhost:6379/0` |
 
 ```bash
 # One-time: pull models
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding
 ollama pull qwen3:30b
 
 # Sanity-check deps
@@ -74,10 +74,10 @@ All defaults are wired for local development. Override via env.
 | `OLLAMA_URL` | `http://localhost:11434` | |
 | `OLLAMA_MODEL` | `qwen3:30b` | Chat model |
 | `OLLAMA_TIMEOUT` | `180s` | Chat call timeout |
-| `EMBED_MODEL` | `nomic-embed-text` | **Must match the model the feeder used.** Query is embedded locally because the `RepoChunk` class is created with `vectorizer: none`. |
+| `EMBED_MODEL` | `qwen3-embedding` | **Must match the model the feeder used.** Query is embedded locally because the `RepoChunk` class is created with `vectorizer: none`. |
 | `EMBED_TIMEOUT` | `30s` | Embed call timeout |
 | `DEFAULT_TOP_K` | `8` | Chunks per query |
-| `HYBRID_ALPHA` | `0.5` | Weaviate hybrid α (1=vector, 0=BM25) |
+| `HYBRID_ALPHA` | `0.65` | Weaviate hybrid α (1=vector, 0=BM25) |
 | `API_KEY` | _(empty)_ | When set, required as `Authorization: Bearer <key>` |
 | `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` | `5` / `10` | Token bucket |
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | `debug|info|warn|error`, `json|text` |
@@ -93,6 +93,22 @@ All defaults are wired for local development. Override via env.
 | `SUMMARY_TTL` | `24h` | |
 | `SUMMARY_MAX_DOC_CHUNKS` | `30` | Cap on docs fed to the summarizer |
 | `SUMMARY_MAX_TOKENS` | `4096` | Truncates the summary string |
+
+### Intelligence enrichment (feeder v2)
+
+| Var | Default | Notes |
+|---|---|---|
+| `INTELLIGENCE_ENABLED` | `true` | Master switch for Symbol/Function/CallEdge/RepoMap queries |
+| `SYMBOL_LOOKUP_LIMIT` | `10` | Max symbols to resolve per request |
+| `FUNCTION_SEARCH_LIMIT` | `10` | Max function metadata results |
+| `CALLGRAPH_DEPTH` | `2` | Max hops when traversing call edges |
+| `CALLGRAPH_MAX_EDGES` | `20` | Cap on total call edges per request |
+| `REPOMAP_LIMIT` | `20` | Max repository map nodes |
+| `MAX_CONTEXT_TOKENS` | `50000` | Hard cap on total context sent to LLM |
+
+When intelligence classes are empty (feeder v1 index), the analyzer
+degrades gracefully — enrichment steps return zero results and the
+pipeline proceeds with RepoChunk-only evidence.
 
 Inspect the cache:
 
@@ -258,17 +274,25 @@ Or import this minimal collection as `analyzer.postman_collection.json`:
 ## Pipeline (per `/analyze` request)
 
 ```
-parse signals → resolve repo → retrieve chunks (Weaviate)
-              → fetch service summary (Redis cache, build on miss)
-              → build prompt (system + service-context + signals + chunks)
-              → Ollama generate → ground-check anchors → calibrate confidence
-              → return Issue JSON
+parse signals
+  → resolve repo (hybrid search + multi-repo resolution)
+  → retrieve code chunks (Weaviate RepoChunk)
+  → fetch service summary (Redis cache ← FileSummary objects)
+  → enrich symbols (Weaviate Symbol class — exact match)
+  → enrich functions (Weaviate Function class — metadata)
+  → enrich call graph (Weaviate CallEdge class — traversal)
+  → enrich repo map (Weaviate RepositoryMap class — architecture)
+  → build prompt (system + summary + symbols + functions + callgraph + repomap + chunks)
+  → Ollama generate → ground-check anchors → calibrate confidence
+  → return Issue JSON
 ```
 
-The service summary is built once per repo per `SUMMARY_TTL` from that
-repo's `site/` Hugo docs and prepended as a `## Service context` block,
-so the LLM knows _what the service is supposed to do_ before reasoning
-about the failure.
+The service summary is built once per repo per `SUMMARY_TTL` from the
+feeder's `FileSummary` objects and prepended as a `## Service context`
+block, so the LLM knows _what the service is supposed to do_ before
+reasoning about the failure. Intelligence context (symbols, functions,
+call graph, architecture) helps the LLM precisely locate definitions
+and trace execution flow.
 
 ## Development
 

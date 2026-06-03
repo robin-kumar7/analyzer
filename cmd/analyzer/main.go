@@ -86,9 +86,9 @@ func cmdServe() int {
 			cancel()
 		}
 	}
-	summ := summarizer.New(cfg, rdb, wc, gen)
+	summ := summarizer.New(cfg, rdb, wc, wc, gen)
 
-	engine := handler.New(cfg, wc, gen, emb, summ)
+	engine := handler.New(cfg, wc, wc, gen, emb, summ)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
