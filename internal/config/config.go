@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -57,7 +58,7 @@ type Config struct {
 	SummaryMaxDocChunks   int
 	SummaryMaxTokens      int
 
-	// Intelligence enrichment (feeder v2).
+	// Intelligence enrichment (repo-indexer v2).
 	IntelligenceEnabled bool
 	SymbolLookupLimit   int
 	FunctionSearchLimit int
@@ -65,6 +66,48 @@ type Config struct {
 	CallGraphMaxEdges   int
 	RepoMapLimit        int
 	MaxContextTokens    int
+
+	// Kafka ingestion (consume log records produced by log-shipper).
+	// When KafkaEnabled is true, the analyzer subscribes to KafkaInputTopic,
+	// runs each record through the analysis pipeline, and (optionally)
+	// produces the resulting Issue to KafkaOutputTopic. Auto-enabled when
+	// KAFKA_BROKERS is non-empty.
+	KafkaEnabled         bool
+	KafkaBrokers         string
+	KafkaClientID        string
+	KafkaGroupID         string
+	KafkaInputTopic      string
+	KafkaOutputTopic     string
+	KafkaWorkers         int
+	KafkaBatchSize       int
+	KafkaBatchTimeout    time.Duration
+	KafkaSessionTimeout  time.Duration
+	KafkaAnalyzeTimeout  time.Duration
+	KafkaPublishTimeout  time.Duration
+	KafkaShutdownTimeout time.Duration
+
+	// Analytics persistence (FR-A8).
+	// When AnalyticsDBURL is non-empty, every analyzed Issue (Kafka and
+	// HTTP paths) is persisted to Postgres for dashboard analytics.
+	// Empty URL disables persistence; the pipeline keeps running.
+	AnalyticsDBURL              string
+	AnalyticsDBTimeout          time.Duration
+	AnalyticsDBMaxConns         int
+	IssueRetentionDays          int           // 0 = keep forever
+	IssueRetentionPruneInterval time.Duration // how often the pruner runs
+
+	// Service-mapping resolver: translates the log-shipper service
+	// identity (Kafka header `service-name`) into the Weaviate repo
+	// the retriever should scope to. Backed by Postgres + Redis cache.
+	// Disabled when AnalyticsDBURL is empty.
+	ServiceMapperTTL    time.Duration // positive (hit) cache TTL
+	ServiceMapperNegTTL time.Duration // negative (miss) cache TTL
+
+	// NotifyCooldown is the minimum time between Teams notifications for
+	// the same bug fingerprint (service+repo+file+line+category). 0 uses
+	// the default (1 hour). Set to a large value (e.g. 24h) to aggressively
+	// suppress repeated alerts; set to 0 or very small to disable cooldown.
+	NotifyCooldown time.Duration
 }
 
 // Load reads configuration from the environment, applies defaults, and validates.
@@ -72,9 +115,9 @@ func Load() (*Config, error) {
 	c := &Config{
 		Port:                 envInt("PORT", 8081),
 		OllamaURL:            envStr("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:          envStr("OLLAMA_MODEL", "qwen3:30b"),
+		OllamaModel:          envStr("OLLAMA_MODEL", "deepseek-r1:32b"),
 		OllamaTimeout:        envDuration("OLLAMA_TIMEOUT", 180*time.Second),
-		EmbedModel:           envStr("EMBED_MODEL", "qwen3-embedding"),
+		EmbedModel:           envStr("EMBED_MODEL", "nomic-embed-text:latest"),
 		EmbedTimeout:         envDuration("EMBED_TIMEOUT", 30*time.Second),
 		WeaviateURL:          envStr("WEAVIATE_URL", "http://localhost:8080"),
 		WeaviateClass:        envStr("WEAVIATE_CLASS", "RepoChunk"),
@@ -111,7 +154,31 @@ func Load() (*Config, error) {
 		CallGraphMaxEdges:   envInt("CALLGRAPH_MAX_EDGES", 20),
 		RepoMapLimit:        envInt("REPOMAP_LIMIT", 20),
 		MaxContextTokens:    envInt("MAX_CONTEXT_TOKENS", 50000),
+
+		KafkaBrokers:         envStr("KAFKA_BROKERS", ""),
+		KafkaClientID:        envStr("KAFKA_CLIENT_ID", "analyzer"),
+		KafkaGroupID:         envStr("KAFKA_GROUP_ID", "analyzer"),
+		KafkaInputTopic:      envStr("KAFKA_INPUT_TOPIC", "logs.enriched"),
+		KafkaOutputTopic:     envStr("KAFKA_OUTPUT_TOPIC", "teams-notifier"),
+		KafkaWorkers:         envInt("KAFKA_WORKERS", 1),
+		KafkaBatchSize:       envInt("KAFKA_BATCH_SIZE", 1),
+		KafkaBatchTimeout:    envDuration("KAFKA_BATCH_TIMEOUT", 30*time.Second),
+		KafkaSessionTimeout:  envDuration("KAFKA_SESSION_TIMEOUT", 5*time.Minute),
+		KafkaAnalyzeTimeout:  envDuration("KAFKA_ANALYZE_TIMEOUT", 5*time.Minute),
+		KafkaPublishTimeout:  envDuration("KAFKA_PUBLISH_TIMEOUT", 10*time.Second),
+		KafkaShutdownTimeout: envDuration("KAFKA_SHUTDOWN_TIMEOUT", 30*time.Second),
+
+		AnalyticsDBURL:              envStr("ANALYTICS_DB_URL", ""),
+		AnalyticsDBTimeout:          envDuration("ANALYTICS_DB_TIMEOUT", 10*time.Second),
+		AnalyticsDBMaxConns:         envInt("ANALYTICS_DB_MAX_CONNS", 10),
+		IssueRetentionDays:          envInt("ISSUE_RETENTION_DAYS", 90),
+		IssueRetentionPruneInterval: envDuration("ISSUE_RETENTION_PRUNE_INTERVAL", time.Hour),
+
+		ServiceMapperTTL:    envDuration("SERVICE_MAPPER_TTL", 60*time.Second),
+		ServiceMapperNegTTL: envDuration("SERVICE_MAPPER_NEG_TTL", 30*time.Second),
+		NotifyCooldown:      envDuration("NOTIFY_COOLDOWN", time.Hour),
 	}
+	c.KafkaEnabled = envBool("KAFKA_ENABLED", c.KafkaBrokers != "")
 	return c, c.validate()
 }
 
@@ -148,7 +215,63 @@ func (c *Config) validate() error {
 	if c.MaxBodyBytes < 1 {
 		return fmt.Errorf("MAX_BODY_BYTES must be >= 1")
 	}
+	if c.KafkaEnabled {
+		if c.KafkaBrokers == "" {
+			return fmt.Errorf("KAFKA_BROKERS must be set when KAFKA_ENABLED=true")
+		}
+		if c.KafkaGroupID == "" {
+			return fmt.Errorf("KAFKA_GROUP_ID must be non-empty when KAFKA_ENABLED=true")
+		}
+		if c.KafkaInputTopic == "" {
+			return fmt.Errorf("KAFKA_INPUT_TOPIC must be non-empty when KAFKA_ENABLED=true")
+		}
+		if c.KafkaWorkers < 1 {
+			return fmt.Errorf("KAFKA_WORKERS must be >= 1, got %d", c.KafkaWorkers)
+		}
+		if c.KafkaBatchSize < 1 {
+			return fmt.Errorf("KAFKA_BATCH_SIZE must be >= 1, got %d", c.KafkaBatchSize)
+		}
+		if c.KafkaSessionTimeout <= 0 {
+			return fmt.Errorf("KAFKA_SESSION_TIMEOUT must be positive")
+		}
+		if c.KafkaAnalyzeTimeout <= 0 {
+			return fmt.Errorf("KAFKA_ANALYZE_TIMEOUT must be positive")
+		}
+	}
+	if c.AnalyticsDBURL != "" {
+		if c.AnalyticsDBTimeout <= 0 {
+			return fmt.Errorf("ANALYTICS_DB_TIMEOUT must be positive when ANALYTICS_DB_URL is set")
+		}
+		if c.AnalyticsDBMaxConns < 1 {
+			return fmt.Errorf("ANALYTICS_DB_MAX_CONNS must be >= 1, got %d", c.AnalyticsDBMaxConns)
+		}
+		if c.IssueRetentionDays < 0 {
+			return fmt.Errorf("ISSUE_RETENTION_DAYS must be >= 0, got %d", c.IssueRetentionDays)
+		}
+		if c.IssueRetentionPruneInterval <= 0 {
+			return fmt.Errorf("ISSUE_RETENTION_PRUNE_INTERVAL must be positive")
+		}
+	}
 	return nil
+}
+
+// SeverityRank returns the ordered rank (low=1, medium=2, high=3, critical=4).
+// Unknown / empty returns (0, false). Case-insensitive.
+func SeverityRank(s string) (int, bool) { return severityRank(s) }
+
+func severityRank(s string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low":
+		return 1, true
+	case "medium":
+		return 2, true
+	case "high":
+		return 3, true
+	case "critical":
+		return 4, true
+	default:
+		return 0, false
+	}
 }
 
 func envStr(key, def string) string {

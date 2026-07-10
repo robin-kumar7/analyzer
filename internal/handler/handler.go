@@ -16,6 +16,7 @@ import (
 	"github.com/infoblox/vibecoder-analyzer/internal/config"
 	"github.com/infoblox/vibecoder-analyzer/internal/ollama"
 	"github.com/infoblox/vibecoder-analyzer/internal/retriever"
+	"github.com/infoblox/vibecoder-analyzer/internal/store"
 	"github.com/infoblox/vibecoder-analyzer/internal/summarizer"
 	"github.com/infoblox/vibecoder-analyzer/internal/weaviate"
 )
@@ -37,8 +38,9 @@ type errorResponse struct {
 // New builds the Gin engine with all routes and middleware.
 // summ may be nil to disable documentation priming.
 // emb may be nil to disable query embedding (BM25-only fallback).
-// intel may be nil to disable intelligence enrichment (feeder v2).
-func New(cfg *config.Config, wc weaviate.Searcher, intel weaviate.IntelligenceSearcher, gen ollama.Generator, emb ollama.Embedder, summ summarizer.Summarizer) *gin.Engine {
+// intel may be nil to disable intelligence enrichment (repo-indexer v2).
+// st may be nil to disable analytics persistence (errors swallowed at the call site).
+func New(cfg *config.Config, wc weaviate.Searcher, intel weaviate.IntelligenceSearcher, gen ollama.Generator, emb ollama.Embedder, summ summarizer.Summarizer, st store.Store) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
@@ -60,7 +62,7 @@ func New(cfg *config.Config, wc weaviate.Searcher, intel weaviate.IntelligenceSe
 
 	// Routes.
 	r.GET("/healthz", healthzHandler(wc, gen))
-	r.POST("/analyze", analyzeHandler(az))
+	r.POST("/analyze", analyzeHandler(az, st))
 
 	return r
 }
@@ -106,7 +108,7 @@ func healthzHandler(wc weaviate.Searcher, gen ollama.Generator) gin.HandlerFunc 
 }
 
 // analyzeHandler runs the analysis pipeline.
-func analyzeHandler(az *analyzer.Analyzer) gin.HandlerFunc {
+func analyzeHandler(az *analyzer.Analyzer, st store.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req analyzeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -154,6 +156,12 @@ func analyzeHandler(az *analyzer.Analyzer) gin.HandlerFunc {
 			})
 			return
 		}
+
+		// Persist the analyzed Issue for analytics (best-effort).
+		// HTTP path carries no tenant context (account / flow / ophid land as NULL);
+		// rows aggregate under service_name only.
+		store.SaveOrLog(c.Request.Context(), st, result, nil, store.SourceHTTP)
+
 		c.JSON(http.StatusOK, result)
 	}
 }

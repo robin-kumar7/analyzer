@@ -1,5 +1,5 @@
 // Package weaviate — intelligence.go adds read-only GraphQL queries for the
-// feeder v2 classes: Symbol, Function, CallEdge, FileSummary, RepositoryMap.
+// repo-indexer v2 classes: Symbol, Function, CallEdge, FileSummary, RepositoryMap.
 package weaviate
 
 import (
@@ -14,7 +14,7 @@ import (
 
 // --- Types ---
 
-// Symbol is a go-to-definition entry from the feeder's AST extraction.
+// Symbol is a go-to-definition entry from the repo-indexer's AST extraction.
 type Symbol struct {
 	Repo     string `json:"repo"`
 	Name     string `json:"symbol"`
@@ -25,7 +25,7 @@ type Symbol struct {
 	Line     int    `json:"line"`
 }
 
-// Function holds function-level metadata from the feeder.
+// Function holds function-level metadata from the repo-indexer.
 type Function struct {
 	Repo         string   `json:"repo"`
 	FunctionName string   `json:"functionName"`
@@ -38,7 +38,7 @@ type Function struct {
 	Summary      string   `json:"summary"`
 }
 
-// CallEdge is a caller→callee relationship from the feeder's call graph.
+// CallEdge is a caller→callee relationship from the repo-indexer's call graph.
 type CallEdge struct {
 	Repo       string `json:"repo"`
 	Caller     string `json:"caller"`
@@ -47,7 +47,7 @@ type CallEdge struct {
 	CalleeFile string `json:"calleeFile"`
 }
 
-// FileSummary is an LLM-generated per-file summary from the feeder.
+// FileSummary is an LLM-generated per-file summary from the repo-indexer.
 type FileSummary struct {
 	Repo     string `json:"repo"`
 	FilePath string `json:"filepath"`
@@ -55,7 +55,7 @@ type FileSummary struct {
 	Summary  string `json:"summary"`
 }
 
-// RepoMapNode is an architectural dependency node from the feeder.
+// RepoMapNode is an architectural dependency node from the repo-indexer.
 type RepoMapNode struct {
 	Repo      string   `json:"repo"`
 	NodeType  string   `json:"nodeType"`

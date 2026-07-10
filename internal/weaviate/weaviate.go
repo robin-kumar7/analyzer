@@ -1,6 +1,6 @@
 // Package weaviate provides a read-only GraphQL client for searching
 // RepoChunk objects. The analyzer never writes to Weaviate; only the
-// feeder does.
+// repo-indexer does.
 package weaviate
 
 import (
@@ -30,7 +30,7 @@ type Chunk struct {
 // Searcher abstracts Weaviate search for testability.
 type Searcher interface {
 	// Search runs a hybrid (BM25 + dense vector) query against the
-	// configured class. queryVector MUST be supplied because the feeder
+	// configured class. queryVector MUST be supplied because the repo-indexer
 	// creates RepoChunk with vectorizer:none — Weaviate cannot embed
 	// queries server-side. queryText is still used for the BM25 portion.
 	Search(ctx context.Context, queryText string, queryVector []float32, repo string, limit int, alpha float64) ([]Chunk, error)

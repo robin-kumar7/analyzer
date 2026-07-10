@@ -1,5 +1,5 @@
 // Package summarizer produces and caches per-repo service summaries.
-// v2: backed by the feeder's FileSummary Weaviate class — no LLM
+// v2: backed by the repo-indexer's FileSummary Weaviate class — no LLM
 // summarization call needed. Summaries are stored in Redis under
 // `<prefix><repo>` with a TTL; lookups are best-effort and never
 // block the request.
@@ -118,7 +118,7 @@ func (c *Cache) Get(ctx context.Context, repo string) string {
 // build fetches file summaries and concatenates them. Uses FileSummary
 // class (v2) when available, falls back to FetchDocs + LLM (v1).
 func (c *Cache) build(ctx context.Context, repo string) (string, error) {
-	// v2 path: use pre-built FileSummary objects from the feeder.
+	// v2 path: use pre-built FileSummary objects from the repo-indexer.
 	if c.FileSummaryFetch != nil {
 		return c.buildFromFileSummaries(ctx, repo)
 	}
@@ -127,7 +127,7 @@ func (c *Cache) build(ctx context.Context, repo string) (string, error) {
 	return c.buildFromDocs(ctx, repo)
 }
 
-// buildFromFileSummaries concatenates feeder-generated file summaries.
+// buildFromFileSummaries concatenates repo-indexer-generated file summaries.
 func (c *Cache) buildFromFileSummaries(ctx context.Context, repo string) (string, error) {
 	summaries, err := c.FileSummaryFetch.GetFileSummaries(ctx, repo, c.Cfg.SummaryMaxDocChunks)
 	if err != nil {

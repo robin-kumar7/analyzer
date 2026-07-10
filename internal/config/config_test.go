@@ -34,6 +34,24 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.WeaviateClass != "RepoChunk" {
 		t.Errorf("WeaviateClass = %q, want RepoChunk", c.WeaviateClass)
 	}
+	if c.KafkaEnabled {
+		t.Errorf("KafkaEnabled = true with no KAFKA_BROKERS, want false")
+	}
+	if c.KafkaInputTopic != "logs.enriched" {
+		t.Errorf("KafkaInputTopic = %q, want logs.enriched", c.KafkaInputTopic)
+	}
+	if c.KafkaOutputTopic != "teams-notifier" {
+		t.Errorf("KafkaOutputTopic = %q, want teams-notifier", c.KafkaOutputTopic)
+	}
+	if c.AnalyticsDBURL != "" {
+		t.Errorf("AnalyticsDBURL = %q, want empty (disabled)", c.AnalyticsDBURL)
+	}
+	if c.IssueRetentionDays != 90 {
+		t.Errorf("IssueRetentionDays = %d, want 90", c.IssueRetentionDays)
+	}
+	if c.AnalyticsDBMaxConns != 10 {
+		t.Errorf("AnalyticsDBMaxConns = %d, want 10", c.AnalyticsDBMaxConns)
+	}
 }
 
 func TestLoad_Validation(t *testing.T) {
@@ -72,11 +90,21 @@ func TestLoad_Validation(t *testing.T) {
 			envs:   map[string]string{"DEFAULT_TOP_K": "0"},
 			errSub: "DEFAULT_TOP_K must be >= 1",
 		},
+		{
+			name:   "ANALYTICS_DB_MAX_CONNS zero with URL set",
+			envs:   map[string]string{"ANALYTICS_DB_URL": "postgres://x", "ANALYTICS_DB_MAX_CONNS": "0"},
+			errSub: "ANALYTICS_DB_MAX_CONNS",
+		},
+		{
+			name:   "ISSUE_RETENTION_DAYS negative with URL set",
+			envs:   map[string]string{"ANALYTICS_DB_URL": "postgres://x", "ISSUE_RETENTION_DAYS": "-1"},
+			errSub: "ISSUE_RETENTION_DAYS",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear everything first.
-			for _, k := range []string{"PORT", "HYBRID_ALPHA", "ANCHOR_LEN", "ANCHOR_MIN", "DEFAULT_TOP_K"} {
+			for _, k := range []string{"PORT", "HYBRID_ALPHA", "ANCHOR_LEN", "ANCHOR_MIN", "DEFAULT_TOP_K", "ANALYTICS_DB_URL", "ANALYTICS_DB_MAX_CONNS", "ISSUE_RETENTION_DAYS"} {
 				os.Unsetenv(k)
 			}
 			for k, v := range tt.envs {

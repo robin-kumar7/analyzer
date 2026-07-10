@@ -19,7 +19,7 @@ type Generator interface {
 
 // Embedder abstracts embedding generation for testability. The analyzer
 // embeds the search query locally before calling Weaviate because the
-// RepoChunk class is created with vectorizer:none (the feeder uploads
+// RepoChunk class is created with vectorizer:none (the repo-indexer uploads
 // pre-computed vectors).
 type Embedder interface {
 	Embed(ctx context.Context, model, text string) ([]float32, error)
@@ -112,7 +112,7 @@ type embedResponse struct {
 }
 
 // Embed returns a single embedding for text using model (e.g. "qwen3-embedding").
-// Must match the embedding model the feeder used; otherwise vector spaces
+// Must match the embedding model the repo-indexer used; otherwise vector spaces
 // are incompatible and search quality collapses.
 func (c *Client) Embed(ctx context.Context, model, text string) ([]float32, error) {
 	body, err := json.Marshal(embedRequest{Model: model, Input: []string{text}})

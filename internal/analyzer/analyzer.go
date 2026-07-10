@@ -98,7 +98,7 @@ func (a *Analyzer) Run(ctx context.Context, q Query) (*issue.Issue, error) {
 		slog.Info("pipeline: step 3/10 skipped (summarizer disabled)")
 	}
 
-	// 4-7. Intelligence enrichment (feeder v2) — symbols, functions,
+	// 4-7. Intelligence enrichment (repo-indexer v2) — symbols, functions,
 	// call graph, repo map. Best-effort: errors logged, not fatal.
 	slog.Info("pipeline: steps 4-7/10 intelligence enrichment",
 		"repo", res.ResolvedRepo,
@@ -126,7 +126,9 @@ func (a *Analyzer) Run(ctx context.Context, q Query) (*issue.Issue, error) {
 		slog.Error("pipeline: step 9/10 generation failed", "error", err)
 		return nil, fmt.Errorf("generation: %w", err)
 	}
-	slog.Info("pipeline: step 9/10 done", "raw_len", len(raw))
+	slog.Info("pipeline: step 9/10 done",
+		"raw_len", len(raw),
+		"raw_response", truncate(raw, 2000))
 
 	// 10. Parse, ground, calibrate.
 	slog.Info("pipeline: step 10/10 parse + ground + calibrate")
@@ -253,4 +255,14 @@ func buildReferences(chunks []weaviate.Chunk) []issue.Reference {
 		}
 	}
 	return refs
+}
+
+// truncate clips s to at most max runes, appending a marker if it had
+// to cut. Used to keep verbose log fields (LLM raw response, etc.)
+// from blowing up log line size on large outputs.
+func truncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…[truncated]"
 }

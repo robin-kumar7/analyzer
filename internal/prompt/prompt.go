@@ -79,7 +79,7 @@ Follow this EXACT 6-step rubric internally — but emit ONLY the final JSON.
 
 // Build constructs the system prompt and user message for the LLM.
 // serviceSummary is the cached per-repo summary (§7a); pass "" to omit.
-// intel contains feeder v2 intelligence data; zero-value is safe.
+// intel contains repo-indexer v2 intelligence data; zero-value is safe.
 func Build(signals logparse.Signals, chunks []weaviate.Chunk, serviceSummary string, intel retriever.Intelligence) (system string, user string) {
 	var b strings.Builder
 

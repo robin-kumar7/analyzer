@@ -1,0 +1,14 @@
+.git
+.gitignore
+build/
+analyzer
+*.env
+!*.example.env
+!*.podman.env
+*.log
+*_test.go
+testdata/
+.vscode/
+.idea/
+README.md
+docs/

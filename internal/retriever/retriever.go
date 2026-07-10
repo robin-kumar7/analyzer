@@ -19,7 +19,7 @@ type Result struct {
 	ResolvedRepo string
 }
 
-// Intelligence holds enrichment data from feeder v2 classes.
+// Intelligence holds enrichment data from repo-indexer v2 classes.
 type Intelligence struct {
 	Symbols  []weaviate.Symbol
 	Functions []weaviate.Function
@@ -151,7 +151,7 @@ func (r *Retriever) resolveRepo(ctx context.Context, query string, vector []floa
 	return Result{Chunks: scopedChunks, ResolvedRepo: winner}, nil
 }
 
-// Enrich performs intelligence enrichment against feeder v2 classes.
+// Enrich performs intelligence enrichment against repo-indexer v2 classes.
 // Returns zero-value Intelligence if the intelligence searcher is nil or
 // intelligence is disabled. Errors are logged and swallowed (best-effort).
 func (r *Retriever) Enrich(ctx context.Context, symbols []string, repo string) Intelligence {

@@ -4,10 +4,13 @@ package issue
 // Issue is the structured analysis result returned by POST /analyze.
 // Fields match 01-requirements.md §3.4 verbatim.
 type Issue struct {
-	Title        string      `json:"title"`
-	Severity     string      `json:"severity"` // low|medium|high|critical
-	Category     string      `json:"category"` // bug|config|dependency|infra|data|unknown
-	Problem      string      `json:"problem"`
+	Title    string `json:"title"`
+	Severity string `json:"severity"` // low|medium|high|critical
+	Category string `json:"category"` // bug|config|dependency|infra|data|unknown
+	Problem  string `json:"problem"`
+	// ServiceName is the originating log-shipper service name (e.g. "http-out").
+	// Set from the Kafka header service-name on ingest; used by notifier for routing.
+	ServiceName  string      `json:"service_name,omitempty"`
 	ResolvedRepo string      `json:"resolved_repo"`
 	File         string      `json:"file"`
 	Line         int         `json:"line"`

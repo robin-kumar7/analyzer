@@ -77,7 +77,7 @@ func testConfig() *config.Config {
 
 func TestHealthz(t *testing.T) {
 	cfg := testConfig()
-	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil)
+	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -97,7 +97,7 @@ func TestHealthz(t *testing.T) {
 
 func TestAnalyze_ValidRequest(t *testing.T) {
 	cfg := testConfig()
-	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil)
+	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil, nil)
 
 	body := `{"input": "panic: nil pointer dereference", "mode": "logs"}`
 	w := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestAnalyze_ValidRequest(t *testing.T) {
 
 func TestAnalyze_MissingInput(t *testing.T) {
 	cfg := testConfig()
-	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil)
+	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil, nil)
 
 	body := `{"mode": "logs"}`
 	w := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestAnalyze_MissingInput(t *testing.T) {
 
 func TestAnalyze_InvalidMode(t *testing.T) {
 	cfg := testConfig()
-	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil)
+	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil, nil)
 
 	body := `{"input": "test", "mode": "invalid"}`
 	w := httptest.NewRecorder()
@@ -147,7 +147,7 @@ func TestAnalyze_InvalidMode(t *testing.T) {
 func TestAPIKeyMiddleware(t *testing.T) {
 	cfg := testConfig()
 	cfg.APIKey = "secret-key"
-	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil)
+	engine := New(cfg, &fakeSearcher{}, nil, &fakeGenerator{}, nil, nil, nil)
 
 	// Without key.
 	w := httptest.NewRecorder()
