@@ -1,0 +1,24 @@
+# Exclude local build outputs and secrets from the Docker build context.
+# go.mod and go.sum are intentionally NOT excluded — they are needed
+# by the multi-stage build.
+
+# Local binaries
+build/
+dist/
+
+# Secrets
+.env
+.env.*
+
+# IDE / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.test
+*.out
