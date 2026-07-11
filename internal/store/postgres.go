@@ -74,12 +74,31 @@ func NewPostgres(ctx context.Context, opts PostgresOptions) (*Postgres, error) {
 
 	migrateCtx, cancel2 := context.WithTimeout(ctx, opts.QueryTimeout)
 	defer cancel2()
-	if _, err := pool.Exec(migrateCtx, schemaSQL); err != nil {
+	if err := applyPostgresSchema(migrateCtx, pool, schemaSQL); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("postgres: apply schema: %w", err)
+		return nil, err
 	}
 
 	return &Postgres{pool: pool, queryTimeout: opts.QueryTimeout}, nil
+}
+
+// applyPostgresSchema executes the embedded schema SQL, splitting at
+// "-- SCHEMA_SPLIT_COMMIT --" so that ALTER TYPE ... ADD VALUE
+// statements are committed before any DDL that references the new
+// enum value (PostgreSQL SQLSTATE 55P04 guard).
+func applyPostgresSchema(ctx context.Context, pool *pgxpool.Pool, sql string) error {
+	const splitMarker = "-- SCHEMA_SPLIT_COMMIT --"
+	segments := strings.SplitN(sql, splitMarker, 2)
+	for i, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		if _, err := pool.Exec(ctx, seg); err != nil {
+			return fmt.Errorf("postgres: apply schema (segment %d): %w", i+1, err)
+		}
+	}
+	return nil
 }
 
 // Save inserts a single Issue row. Errors propagate to the caller —

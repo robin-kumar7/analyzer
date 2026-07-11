@@ -301,6 +301,47 @@ CREATE INDEX IF NOT EXISTS idx_execution_jobs_created
     ON execution_jobs (created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Global AI / Local AI execution modes (docs/12-ai-executor-execution-modes.md)
+--
+-- 'DISPATCHED' sits between QUEUED and RUNNING: a local-mode row has been
+-- pushed to a local executor's tunnel URL and 202-accepted, but no
+-- heartbeat has arrived yet. Global-mode jobs never enter this state.
+-- ---------------------------------------------------------------------------
+ALTER TYPE execution_status ADD VALUE IF NOT EXISTS 'DISPATCHED';
+
+-- SCHEMA_SPLIT_COMMIT --
+-- PostgreSQL requires ALTER TYPE ... ADD VALUE to be committed before the
+-- new value can be referenced in the same session (SQLSTATE 55P04).
+-- The store.NewPostgres function splits on this marker and executes each
+-- segment in a separate Exec call so the ADD VALUE transaction is
+-- committed first.
+
+ALTER TABLE execution_jobs
+    ADD COLUMN IF NOT EXISTS execution_mode      TEXT NOT NULL DEFAULT 'global' CHECK (execution_mode IN ('global', 'local')),
+    ADD COLUMN IF NOT EXISTS local_executor_url  TEXT,               -- tunnel URL used for this job (local mode only)
+    ADD COLUMN IF NOT EXISTS callback_token      TEXT,               -- random secret the agent must present on heartbeat/report; NEVER returned by any GET
+    ADD COLUMN IF NOT EXISTS dispatched_at       TIMESTAMPTZ,        -- when analytics-api POSTed to the tunnel URL
+    ADD COLUMN IF NOT EXISTS last_heartbeat_at   TIMESTAMPTZ;        -- bumped on every /heartbeat call (local mode only)
+
+CREATE INDEX IF NOT EXISTS idx_execution_jobs_local_heartbeat_sweep
+    ON execution_jobs (execution_mode, status, last_heartbeat_at)
+    WHERE execution_mode = 'local' AND status IN ('DISPATCHED', 'RUNNING', 'PUSHING');
+
+-- ai_executor_settings — singleton row (the standard Postgres
+-- singleton-row idiom: id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+-- so a second INSERT always violates the check).
+CREATE TABLE IF NOT EXISTS ai_executor_settings (
+    id                          SMALLINT     PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    mode                        TEXT         NOT NULL DEFAULT 'global' CHECK (mode IN ('global', 'local')),
+    heartbeat_interval_seconds  INT          NOT NULL DEFAULT 10,
+    heartbeat_timeout_seconds   INT          NOT NULL DEFAULT 30,
+    updated_at                  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+INSERT INTO ai_executor_settings (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
 -- notification_log
 --
 -- Tracks the last time each bug fingerprint triggered a Teams notification.
