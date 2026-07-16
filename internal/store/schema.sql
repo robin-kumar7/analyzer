@@ -1,12 +1,15 @@
 -- ╔══════════════════════════════════════════════════════════════════════╗
--- ║  Owner of the analytics-DB schema. Applied idempotently on every     ║
--- ║  analyzer boot (analyzer/internal/store/postgres.go embeds this file ║
--- ║  via //go:embed and runs it through pool.Exec).                      ║
+-- ║  This file is a verbatim copy of analyzer/internal/store/schema.sql. ║
+-- ║  Embedded into analytics-api so the API can self-bootstrap when      ║
+-- ║  it boots before the analyzer. Both copies are applied idempotently  ║
+-- ║  (IF NOT EXISTS / CREATE OR REPLACE) so whichever service wins the   ║
+-- ║  boot race creates the schema; the other's apply is a no-op.        ║
 -- ║                                                                      ║
--- ║  KEEP IN SYNC with analytics-api/internal/store/schema.sql — that    ║
--- ║  service applies the same SQL on its own boot so the API works even  ║
--- ║  if the analyzer hasn't started yet. Both rely on IF NOT EXISTS /    ║
--- ║  CREATE OR REPLACE so applying twice is a no-op.                     ║
+-- ║  DO NOT EDIT this copy directly. Edit analyzer/internal/store/       ║
+-- ║  schema.sql and copy it here:                                        ║
+-- ║                                                                      ║
+-- ║    cp analyzer/internal/store/schema.sql \                           ║
+-- ║       analytics-api/internal/store/schema.sql                        ║
 -- ╚══════════════════════════════════════════════════════════════════════╝
 
 -- Analyzer Issue store — single table holds every Issue produced by
@@ -147,18 +150,11 @@ CREATE TABLE IF NOT EXISTS service_mappings (
     -- Soft-disable without deleting history.
     enabled                  BOOLEAN      NOT NULL    DEFAULT true,
 
-    -- Per-service notification thresholds. The analyzer will only forward
-    -- an Issue to the notifier topic when BOTH conditions are met:
-    --   iss.Severity rank >= notify_min_severity rank
-    --   iss.Confidence >= notify_min_confidence
-    -- Configurable from the UI via analytics-api PATCH/PUT on this row.
-    -- Values: 'low' | 'medium' | 'high' | 'critical' (default 'high').
+    -- Per-service notification thresholds (editable from the UI).
     notify_min_severity      TEXT         NOT NULL    DEFAULT 'high',
     notify_min_confidence    DOUBLE PRECISION         NOT NULL    DEFAULT 0.7,
 
-    -- Local filesystem path to the git checkout for this service, used by
-    -- the ai-executor when running in local-workspace mode (no clone needed).
-    -- e.g. "/Users/dev/development/cdc-http-out".
+    -- Local filesystem path on the ai-executor host (worktree mode).
     local_repo_path          TEXT
 );
 
@@ -168,7 +164,6 @@ CREATE INDEX IF NOT EXISTS idx_service_mappings_enabled
 -- Guards for existing deployments.
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS notify_min_severity   TEXT             NOT NULL DEFAULT 'high';
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS notify_min_confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7;
-ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS local_repo_path       TEXT;
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS local_repo_path       TEXT;
 
 -- Keep updated_at honest. Used by the log-shipper poller to detect
@@ -285,9 +280,14 @@ CREATE TABLE IF NOT EXISTS execution_jobs (
     -- Worker identity.
     worker_id           TEXT,
 
-    -- Resolved local filesystem path used instead of clone when the
-    -- service repo is already checked out on the executor host.
-    workspace_path      TEXT
+    -- Resolved local filesystem path (worktree mode, no clone).
+    workspace_path      TEXT,
+
+    -- Reoccurrence tracking: how many times this bug fired again
+    -- while this job was the most recent for its fingerprint. The
+    -- audit trail lives in execution_job_reoccurrences (below).
+    reoccurrence_count  INT               NOT NULL DEFAULT 0,
+    last_reoccurred_at  TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_execution_jobs_status_created
@@ -299,6 +299,33 @@ CREATE INDEX IF NOT EXISTS idx_execution_jobs_issue_created
 
 CREATE INDEX IF NOT EXISTS idx_execution_jobs_created
     ON execution_jobs (created_at DESC);
+
+-- Guard for existing deployments.
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS reoccurrence_count INT NOT NULL DEFAULT 0;
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS last_reoccurred_at TIMESTAMPTZ;
+
+-- ---------------------------------------------------------------------------
+-- execution_job_reoccurrences — audit trail of "same bug fired again".
+--
+-- Written every time analytics-api receives an execute request whose
+-- issue.fingerprint matches an existing job (QUEUED/RUNNING/SUCCEEDED).
+-- Instead of enqueuing a duplicate job we record the reoccurrence here
+-- and bump execution_jobs.reoccurrence_count. The original issue_id is
+-- stored so operators can trace which log occurrence re-triggered.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS execution_job_reoccurrences (
+    id               BIGSERIAL   PRIMARY KEY,
+    job_id           UUID        NOT NULL REFERENCES execution_jobs(id) ON DELETE CASCADE,
+    issue_id         UUID        NOT NULL,
+    fingerprint      TEXT        NOT NULL,
+    occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    note             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_job_reoccurrences_job_time
+    ON execution_job_reoccurrences (job_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_job_reoccurrences_fingerprint
+    ON execution_job_reoccurrences (fingerprint, occurred_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Global AI / Local AI execution modes (docs/12-ai-executor-execution-modes.md)
@@ -312,9 +339,8 @@ ALTER TYPE execution_status ADD VALUE IF NOT EXISTS 'DISPATCHED';
 -- SCHEMA_SPLIT_COMMIT --
 -- PostgreSQL requires ALTER TYPE ... ADD VALUE to be committed before the
 -- new value can be referenced in the same session (SQLSTATE 55P04).
--- The store.NewPostgres function splits on this marker and executes each
--- segment in a separate Exec call so the ADD VALUE transaction is
--- committed first.
+-- The store.New function splits on this marker and executes each segment
+-- in a separate Exec call so the ADD VALUE transaction is committed first.
 
 ALTER TABLE execution_jobs
     ADD COLUMN IF NOT EXISTS execution_mode      TEXT NOT NULL DEFAULT 'global' CHECK (execution_mode IN ('global', 'local')),
@@ -342,18 +368,13 @@ INSERT INTO ai_executor_settings (id) VALUES (1)
     ON CONFLICT (id) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
--- notification_log
---
--- Tracks the last time each bug fingerprint triggered a Teams notification.
--- The analyzer checks this table before forwarding an Issue to the notifier
--- topic; if the same fingerprint was sent within the cooldown window it is
--- suppressed. One row per fingerprint — UPSERT on every successful send.
+-- notification_log (mirrors analyzer/internal/store/schema.sql)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS notification_log (
     fingerprint     TEXT        PRIMARY KEY,
     last_notified   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    title           TEXT,        -- advisory: last title sent (for debugging)
-    service_name    TEXT         -- advisory: service that generated the issue
+    title           TEXT,
+    service_name    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_log_last
