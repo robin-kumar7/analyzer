@@ -155,7 +155,11 @@ CREATE TABLE IF NOT EXISTS service_mappings (
     notify_min_confidence    DOUBLE PRECISION         NOT NULL    DEFAULT 0.7,
 
     -- Local filesystem path on the ai-executor host (worktree mode).
-    local_repo_path          TEXT
+    local_repo_path          TEXT,
+
+    -- Timestamp of the last successful repo-indexer sync triggered
+    -- from the UI. NULL until the first sync completes.
+    last_synced_at           TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_service_mappings_enabled
@@ -165,6 +169,7 @@ CREATE INDEX IF NOT EXISTS idx_service_mappings_enabled
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS notify_min_severity   TEXT             NOT NULL DEFAULT 'high';
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS notify_min_confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7;
 ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS local_repo_path       TEXT;
+ALTER TABLE service_mappings ADD COLUMN IF NOT EXISTS last_synced_at        TIMESTAMPTZ;
 
 -- Keep updated_at honest. Used by the log-shipper poller to detect
 -- changes since its last fetch.
