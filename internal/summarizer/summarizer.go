@@ -150,6 +150,24 @@ func (c *Cache) buildFromFileSummaries(ctx context.Context, repo string) (string
 		b.WriteString(": ")
 		b.WriteString(strings.TrimSpace(fs.Summary))
 		b.WriteString("\n")
+		// Structured is repo-indexer's per-file breakdown from the same
+		// LLM call that produced Summary above (nil/empty for repos
+		// indexed before that feature shipped — both are then no-ops).
+		// Of the fields available, external_calls and notes carry the
+		// highest signal for the analyzer's job (tracing where a panic
+		// crossed a package boundary, or a documented gotcha the LLM
+		// flagged) without bloating the prompt with structural info
+		// (structs/interfaces/imports) that mostly restates the code.
+		if len(fs.ExternalCalls) > 0 {
+			b.WriteString("  calls: ")
+			b.WriteString(strings.Join(fs.ExternalCalls, ", "))
+			b.WriteString("\n")
+		}
+		if len(fs.Notes) > 0 {
+			b.WriteString("  notes: ")
+			b.WriteString(strings.Join(fs.Notes, "; "))
+			b.WriteString("\n")
+		}
 	}
 	return b.String(), nil
 }

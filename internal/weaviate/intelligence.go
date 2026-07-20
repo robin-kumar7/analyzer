@@ -48,11 +48,26 @@ type CallEdge struct {
 }
 
 // FileSummary is an LLM-generated per-file summary from the repo-indexer.
+// Summary is the original 1-3 sentence prose description; Purpose through
+// Notes are a structured breakdown of the same file produced by the same
+// repo-indexer LLM call (see vibecoder-repo-indexer/internal/summary's
+// StructuredSummary) — repos indexed before that feature shipped will
+// have these as zero values, so treat them as optional everywhere.
 type FileSummary struct {
 	Repo     string `json:"repo"`
 	FilePath string `json:"filepath"`
 	Package  string `json:"package"`
 	Summary  string `json:"summary"`
+
+	Purpose       string   `json:"purpose"`
+	Structs       []string `json:"structs"`
+	Interfaces    []string `json:"interfaces"`
+	Functions     []string `json:"functions"`
+	Imports       []string `json:"imports"`
+	ExternalCalls []string `json:"externalCalls"`
+	Reads         []string `json:"reads"`
+	Writes        []string `json:"writes"`
+	Notes         []string `json:"notes"`
 }
 
 // RepoMapNode is an architectural dependency node from the repo-indexer.
@@ -314,6 +329,15 @@ func (c *Client) GetFileSummaries(ctx context.Context, repo string, limit int) (
       filepath
       package
       summary
+      purpose
+      structs
+      interfaces
+      functions
+      imports
+      externalCalls
+      reads
+      writes
+      notes
     }
   }
 }`, escapeGraphQLString(repo), limit)
@@ -329,10 +353,19 @@ func (c *Client) GetFileSummaries(ctx context.Context, repo string, limit int) (
 	summaries := make([]FileSummary, 0, len(objs))
 	for _, obj := range objs {
 		summaries = append(summaries, FileSummary{
-			Repo:     getString(obj, "repo"),
-			FilePath: getString(obj, "filepath"),
-			Package:  getString(obj, "package"),
-			Summary:  getString(obj, "summary"),
+			Repo:          getString(obj, "repo"),
+			FilePath:      getString(obj, "filepath"),
+			Package:       getString(obj, "package"),
+			Summary:       getString(obj, "summary"),
+			Purpose:       getString(obj, "purpose"),
+			Structs:       getStringSlice(obj, "structs"),
+			Interfaces:    getStringSlice(obj, "interfaces"),
+			Functions:     getStringSlice(obj, "functions"),
+			Imports:       getStringSlice(obj, "imports"),
+			ExternalCalls: getStringSlice(obj, "externalCalls"),
+			Reads:         getStringSlice(obj, "reads"),
+			Writes:        getStringSlice(obj, "writes"),
+			Notes:         getStringSlice(obj, "notes"),
 		})
 	}
 	// Sort by filepath ascending for deterministic output.

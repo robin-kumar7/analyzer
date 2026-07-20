@@ -22,6 +22,18 @@ func (f *fakeDocFetcher) FetchDocs(_ context.Context, _, _ string, _ int) ([]wea
 	return f.chunks, f.err
 }
 
+// fakeFileSummaryFetcher implements fileSummaryFetcher (v2 path).
+type fakeFileSummaryFetcher struct {
+	calls     int32
+	summaries []weaviate.FileSummary
+	err       error
+}
+
+func (f *fakeFileSummaryFetcher) GetFileSummaries(_ context.Context, _ string, _ int) ([]weaviate.FileSummary, error) {
+	atomic.AddInt32(&f.calls, 1)
+	return f.summaries, f.err
+}
+
 // fakeGenerator implements ollama.Generator.
 type fakeGenerator struct {
 	calls int32
@@ -109,6 +121,56 @@ func TestGet_BuildsAndReturnsSummary_NoCache(t *testing.T) {
 	if fetcher.calls != 2 || gen.calls != 2 {
 		t.Errorf("without redis, summary should be recomputed; got fetch=%d gen=%d",
 			fetcher.calls, gen.calls)
+	}
+}
+
+func TestGet_V2_BuildsFromFileSummaries_IncludesCallsAndNotes(t *testing.T) {
+	cfg := baseCfg()
+	fsf := &fakeFileSummaryFetcher{summaries: []weaviate.FileSummary{
+		{
+			FilePath:      "common/handlers/event-handler.go",
+			Package:       "handlers",
+			Summary:       "Processes pub/sub events and dispatches them.",
+			ExternalCalls: []string{"service.ProcessEvent", "logger.Error"},
+			Notes:         []string{"Panics if event.Data is []byte."},
+		},
+		{
+			// Pre-structured-summary repo: no ExternalCalls/Notes at all.
+			FilePath: "legacy/old.go",
+			Summary:  "Legacy helper.",
+		},
+	}}
+	c := New(cfg, nil, fsf, nil, nil)
+
+	got := c.Get(context.Background(), "repo-a")
+	if fsf.calls != 1 {
+		t.Fatalf("expected 1 fetch call, got %d", fsf.calls)
+	}
+	want := "common/handlers/event-handler.go [handlers]: Processes pub/sub events and dispatches them.\n" +
+		"  calls: service.ProcessEvent, logger.Error\n" +
+		"  notes: Panics if event.Data is []byte.\n" +
+		"legacy/old.go: Legacy helper.\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestGet_V2_PreferredOverV1Fallback(t *testing.T) {
+	cfg := baseCfg()
+	fsf := &fakeFileSummaryFetcher{summaries: []weaviate.FileSummary{
+		{FilePath: "a.go", Summary: "A file."},
+	}}
+	docFetch := &fakeDocFetcher{chunks: []weaviate.Chunk{{Content: "should be ignored"}}}
+	gen := &fakeGenerator{out: "should not be called"}
+	c := New(cfg, nil, fsf, docFetch, gen)
+
+	_ = c.Get(context.Background(), "repo-a")
+	if fsf.calls != 1 {
+		t.Errorf("expected FileSummaryFetch to be used, calls=%d", fsf.calls)
+	}
+	if docFetch.calls != 0 || gen.calls != 0 {
+		t.Errorf("v1 fallback should not run when FileSummaryFetch is set; docFetch=%d gen=%d",
+			docFetch.calls, gen.calls)
 	}
 }
 

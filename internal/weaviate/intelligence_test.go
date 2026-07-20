@@ -155,10 +155,14 @@ func TestGetFileSummaries(t *testing.T) {
 				"Get": map[string]any{
 					"FileSummary": []map[string]any{
 						{
-							"repo":     "my-repo",
-							"filepath": "internal/dns/handler.go",
-							"package":  "dns",
-							"summary":  "Handles DNS CRUD operations.",
+							"repo":          "my-repo",
+							"filepath":      "internal/dns/handler.go",
+							"package":       "dns",
+							"summary":       "Handles DNS CRUD operations.",
+							"purpose":       "DNS record CRUD",
+							"functions":     []string{"CreateRecord", "DeleteRecord"},
+							"externalCalls": []string{"store.Save"},
+							"notes":         []string{"Assumes records are pre-validated."},
 						},
 						{
 							"repo":     "my-repo",
@@ -186,6 +190,29 @@ func TestGetFileSummaries(t *testing.T) {
 	// Should be sorted by filepath ascending.
 	if summaries[0].FilePath != "cmd/main.go" {
 		t.Errorf("first summary filepath = %q, want cmd/main.go (sorted)", summaries[0].FilePath)
+	}
+
+	dnsHandler := summaries[1]
+	if dnsHandler.FilePath != "internal/dns/handler.go" {
+		t.Fatalf("second summary filepath = %q, want internal/dns/handler.go", dnsHandler.FilePath)
+	}
+	if dnsHandler.Purpose != "DNS record CRUD" {
+		t.Errorf("Purpose = %q", dnsHandler.Purpose)
+	}
+	if len(dnsHandler.Functions) != 2 || dnsHandler.Functions[0] != "CreateRecord" {
+		t.Errorf("Functions = %v", dnsHandler.Functions)
+	}
+	if len(dnsHandler.ExternalCalls) != 1 || dnsHandler.ExternalCalls[0] != "store.Save" {
+		t.Errorf("ExternalCalls = %v", dnsHandler.ExternalCalls)
+	}
+	if len(dnsHandler.Notes) != 1 || dnsHandler.Notes[0] != "Assumes records are pre-validated." {
+		t.Errorf("Notes = %v", dnsHandler.Notes)
+	}
+	// The pre-structured-summary entry (cmd/main.go) must decode with
+	// nil/zero structured fields rather than panicking or erroring.
+	if summaries[0].Purpose != "" || summaries[0].Functions != nil {
+		t.Errorf("expected zero-valued structured fields for entry without them, got Purpose=%q Functions=%v",
+			summaries[0].Purpose, summaries[0].Functions)
 	}
 }
 
